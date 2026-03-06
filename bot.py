@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import Button, View, Modal, TextInput
 import os
 import asyncio
@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Flask для keep-alive на Render (free Web Service)
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -26,154 +25,166 @@ def run_flask():
 flask_thread = Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
-# Настройки бота
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Хранилище стрелок (в памяти)
 events = {}
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# ───────────────────────────────────────────────
-# Планирование пинга за 1 минуту до начала
-# ───────────────────────────────────────────────
-async def schedule_ping(channel: discord.TextChannel, message: discord.Message, event: dict):
+# Ежедневная чистка в 22:00 МСК
+@tasks.loop(hours=24)
+async def daily_cleanup():
+    now = datetime.now(MOSCOW_TZ)
+    next_run = now.replace(hour=22, minute=0, second=0, microsecond=0)
+    if now.hour >= 22:
+        next_run += timedelta(days=1)
+    await asyncio.sleep((next_run - now).total_seconds())
+
+    CHANNEL_ID = 123456789012345678  # ← ВСТАВЬ ID КАНАЛА
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    setup_msg_id = None
+    async for msg in channel.history(limit=100):
+        if msg.author == bot.user and "**🔥 Панель создания стрел 🔥**" in msg.content:
+            setup_msg_id = msg.id
+            break
+
+    if setup_msg_id:
+        async for msg in channel.history(limit=None):
+            if msg.id != setup_msg_id:
+                try:
+                    await msg.delete()
+                except:
+                    pass
+
+@daily_cleanup.before_loop
+async def before():
+    await bot.wait_until_ready()
+
+# Пинг за 5 минут
+async def schedule_ping(channel, message, event):
     try:
-        date_str = event['date']          # "05.03.2026"
-        time_str = event['time']          # "19:00" или "19:00 МСК"
-
-        # Убираем "МСК" или лишнее после пробела
+        date_str = event['date']
+        time_str = event['time']
         time_clean = time_str.split()[0] if ' ' in time_str else time_str
-
         dt_str = f"{date_str} {time_clean}"
         dt_naive = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
-
-        # Делаем timezone-aware (МСК)
         dt_msk = MOSCOW_TZ.localize(dt_naive)
 
-        # Время пинга: за 60 секунд до
         ping_time = dt_msk - timedelta(minutes=5)
+        now = datetime.now(MOSCOW_TZ)
 
-        # Текущее время в МСК
-        now_msk = datetime.now(MOSCOW_TZ)
-
-        if ping_time <= now_msk:
-            print(f"Время пинга для стрелы {message.id} уже прошло или наступило")
+        if ping_time <= now:
             return
 
-        seconds_to_wait = (ping_time - now_msk).total_seconds()
-        print(f"Пинг для стрелы {message.id} запланирован через {seconds_to_wait:.0f} сек")
+        await asyncio.sleep((ping_time - now).total_seconds())
 
-        await asyncio.sleep(seconds_to_wait)
-
-        # Проверяем, что стрела ещё существует
         if message.id not in events:
-            print("Стрела удалена до пинга")
             return
 
-        mentions = " ".join([f"<@{uid}>" for uid in event["participants"]]) or "@everyone"
-
+        mentions = " ".join(f"<@{uid}>" for uid in event["participants"]) or "@everyone"
         await channel.send(
-            f"{mentions}\n**Стрела начинается через 5 минут!**\nФормат: {event['format']}",
+            f"{mentions}\n**СТРЕЛА начинается через 5 минут! 🔥**\nФормат: {event['format']}",
             reference=message
         )
-        print(f"Пинг отправлен для стрелы {message.id}")
-
     except Exception as e:
-        print(f"Ошибка при пинге: {e}")
+        print(f"Пинг ошибка: {e}")
 
-
-# ───────────────────────────────────────────────
-# Кнопка "Слот" с defer
-# ───────────────────────────────────────────────
+# Кнопка Слот
 class SlotButton(Button):
-    def __init__(self, event_message_id: int):
-        super().__init__(label="Слот", style=discord.ButtonStyle.green, custom_id=f"slot_{event_message_id}")
-        self.event_message_id = event_message_id
+    def __init__(self, mid: int):
+        super().__init__(label="Слот", style=discord.ButtonStyle.green, custom_id=f"slot_{mid}")
+        self.mid = mid
 
     async def callback(self, interaction: discord.Interaction):
-        event = events.get(self.event_message_id)
+        event = events.get(self.mid)
         if not event:
-            await interaction.response.send_message("Стрела уже удалена или устарела.", ephemeral=True)
+            await interaction.response.send_message("Стрела удалена", ephemeral=True)
             return
 
-        user_id = interaction.user.id
-        if user_id in event["participants"]:
-            await interaction.response.send_message("Ты уже записан!", ephemeral=True)
+        uid = interaction.user.id
+        if uid in event["participants"]:
+            await interaction.response.send_message("Ты уже записан", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        event["participants"].append(user_id)
-        await self.update_event_message(interaction.message)
+        event["participants"].append(uid)
+        await update_event_message(interaction.message)
 
-        await interaction.followup.send("Записался успешно!", ephemeral=True)
-
-    async def update_event_message(self, message: discord.Message):
-        event = events.get(message.id)
-        if not event: return
-
-        participants = [f"<@{uid}>" for uid in event["participants"]]
-        list_text = "\n".join(participants) or "Пока пусто"
-
-        content = (
-            f"**🔥 СТРЕЛА 🔥**\n"
-            f"**{event['date']} | {event['time']} | {event['server_number']} сервер**\n"
-            f"**Формат: {event['format']}**   |   **Записались: {len(event['participants'])} чел.**\n"
-            f"────────────────────────────\n"
-            f"{list_text}\n"
-            f"────────────────────────────"
-        )
-
-        await message.edit(content=content)
+        await interaction.followup.send("Записался!", ephemeral=True)
 
 
-# ───────────────────────────────────────────────
-# Модалка создания стрелы
-# ───────────────────────────────────────────────
+# Кнопка Отмена
+class CancelButton(Button):
+    def __init__(self, mid: int):
+        super().__init__(label="Отмена", style=discord.ButtonStyle.red, custom_id=f"cancel_{mid}")
+        self.mid = mid
+
+    async def callback(self, interaction: discord.Interaction):
+        event = events.get(self.mid)
+        if not event:
+            await interaction.response.send_message("Стрела удалена", ephemeral=True)
+            return
+
+        uid = interaction.user.id
+        if uid not in event["participants"]:
+            await interaction.response.send_message("Ты не записан", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        event["participants"].remove(uid)
+        await update_event_message(interaction.message)
+
+        await interaction.followup.send("Отписался", ephemeral=True)
+
+
+# Обновление сообщения
+async def update_event_message(message: discord.Message):
+    event = events.get(message.id)
+    if not event:
+        return
+
+    parts = [f"<@{uid}>" for uid in event["participants"]]
+    list_text = "\n".join(parts) or "Пока пусто"
+
+    content = (
+        f"**🔥 СТРЕЛА 🔥** @everyone\n"
+        f"**{event['date']} | {event['time']} | {event['server_number']} сервер**\n"
+        f"**Формат: {event['format']}**   |   **Записались: {len(event['participants'])} чел.**\n"
+        f"────────────────────────────\n"
+        f"{list_text}\n"
+        f"────────────────────────────"
+    )
+
+    await message.edit(content=content)
+
+
+# Модалка БЕЗ ПОЛЯ ДАТЫ
 class CreateArrowModal(Modal, title="Создать новую стрелу"):
-    server_number = TextInput(
-        label="Номер сервера",
-        placeholder="Номер сервера",
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=50
-    )
-    date = TextInput(
-        label="Дата (ДД.ММ.ГГГГ)",
-        placeholder="05.03.2026",
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=10
-    )
-    time = TextInput(
-        label="Время",
-        placeholder="19:00 МСК",
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=30
-    )
-    format_field = TextInput(
-        label="Формат / кол-во + оружие",
-        placeholder="2×2 / 3×3 / 4×4 / 5x5 + оружие",
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=50
-    )
+    server_number = TextInput(label="Номер сервера", placeholder="Номер сервера", required=True, max_length=50)
+    time = TextInput(label="Время", placeholder="19:00 МСК", required=True, max_length=30)
+    format_field = TextInput(label="Формат / кол-во", placeholder="3×3 / deagle shot rifle", required=True, max_length=50)
 
     async def on_submit(self, interaction: discord.Interaction):
-        server_number = self.server_number.value.strip()
-        date_str = self.date.value.strip()
-        time_str = self.time.value.strip()
-        format_str = self.format_field.value.strip()
+        sn = self.server_number.value.strip()
+        t = self.time.value.strip()
+        f = self.format_field.value.strip()
+
+        # Дата берётся текущая (сегодня)
+        today = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y")
 
         content = (
-            f"**🔥 СТРЕЛА 🔥**\n"
-            f"**{date_str} | {time_str} | {server_number} сервер**\n"
-            f"**Формат: {format_str}**   |   **Записались: 0 чел.**\n"
+            f"**🔥 СТРЕЛА 🔥** @everyone\n"
+            f"**{today} | {t} | {sn} сервер**\n"
+            f"**Формат: {f}**   |   **Записались: 0 чел.**\n"
             f"────────────────────────────\n"
             f"Пока пусто\n"
             f"────────────────────────────"
@@ -183,35 +194,26 @@ class CreateArrowModal(Modal, title="Создать новую стрелу"):
         msg = await interaction.channel.send(content, view=view)
 
         events[msg.id] = {
-            "server_number": server_number,
-            "date": date_str,
-            "time": time_str,
-            "format": format_str,
+            "server_number": sn,
+            "date": today,
+            "time": t,
+            "format": f,
             "participants": []
         }
 
         view.add_item(SlotButton(msg.id))
+        view.add_item(CancelButton(msg.id))
         await msg.edit(view=view)
 
-        # Планируем пинг
-        asyncio.create_task(
-            schedule_ping(interaction.channel, msg, events[msg.id])
-        )
+        asyncio.create_task(schedule_ping(interaction.channel, msg, events[msg.id]))
 
-        await interaction.response.send_message("Стрела создана! 🔥 Пинг за 1 минуту до начала.", ephemeral=True)
+        await interaction.response.send_message("Стрела создана!", ephemeral=True)
 
 
-# ───────────────────────────────────────────────
-# Кнопка "Создать стрелу"
-# ───────────────────────────────────────────────
+# Панель создания
 class CreateArrowButton(Button):
     def __init__(self):
-        super().__init__(
-            label="Создать стрелу",
-            style=discord.ButtonStyle.blurple,
-            custom_id="create_arrow",
-            emoji="🔥"
-        )
+        super().__init__(label="Создать стрелу", style=discord.ButtonStyle.blurple, custom_id="create_arrow", emoji="🔥")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CreateArrowModal())
@@ -223,26 +225,20 @@ class PersistentView(View):
         self.add_item(CreateArrowButton())
 
 
-# ───────────────────────────────────────────────
-# События
-# ───────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"Бот {bot.user} онлайн!")
     bot.add_view(PersistentView())
+    if not daily_cleanup.is_running():
+        daily_cleanup.start()
 
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup(ctx):
     view = PersistentView()
-    await ctx.send(
-        "**🔥 Панель создания стрел 🔥**\n"
-        "Нажми кнопку ниже, чтобы создать новую стрелу.",
-        view=view
-    )
+    await ctx.send("**🔥 Панель создания стрел 🔥**\nНажми кнопку ниже, чтобы создать новую стрелу.", view=view)
     await ctx.message.delete()
 
 
-# Запуск
 bot.run(os.getenv("DISCORD_TOKEN"))
