@@ -44,7 +44,7 @@ async def daily_cleanup():
         next_run += timedelta(days=1)
     await asyncio.sleep((next_run - now).total_seconds())
 
-    CHANNEL_ID = 1478997753735680092  # ID канала
+    CHANNEL_ID = 1478992357327110220  # ID канала
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -238,3 +238,4 @@ async def setup(ctx):
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
