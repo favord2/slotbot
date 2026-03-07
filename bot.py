@@ -35,16 +35,16 @@ events = {}
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# Ежедневная чистка в 22:00 МСК
+# Ежедневная чистка в 22:05 МСК
 @tasks.loop(hours=24)
 async def daily_cleanup():
     now = datetime.now(MOSCOW_TZ)
-    next_run = now.replace(hour=22, minute=0, second=0, microsecond=0)
-    if now.hour >= 22:
+    next_run = now.replace(hour=22, minute=5, second=0, microsecond=0)  # ← 22:05
+    if now.hour > 22 or (now.hour == 22 and now.minute >= 5):
         next_run += timedelta(days=1)
     await asyncio.sleep((next_run - now).total_seconds())
 
-    CHANNEL_ID = 123456789012345678  # ← ВСТАВЬ ID КАНАЛА
+    CHANNEL_ID = 1478997753735680092  # ID канала
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -62,10 +62,6 @@ async def daily_cleanup():
                     await msg.delete()
                 except:
                     pass
-
-@daily_cleanup.before_loop
-async def before():
-    await bot.wait_until_ready()
 
 # Пинг за 5 минут
 async def schedule_ping(channel, message, event):
@@ -167,7 +163,7 @@ async def update_event_message(message: discord.Message):
     await message.edit(content=content)
 
 
-# Модалка БЕЗ ПОЛЯ ДАТЫ
+# Модалка создания стрелы
 class CreateArrowModal(Modal, title="Создать новую стрелу"):
     server_number = TextInput(label="Номер сервера", placeholder="Номер сервера", required=True, max_length=50)
     time = TextInput(label="Время", placeholder="19:00 МСК", required=True, max_length=30)
