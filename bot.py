@@ -44,7 +44,7 @@ async def daily_cleanup():
         next_run += timedelta(days=1)
     await asyncio.sleep((next_run - now).total_seconds())
 
-    CHANNEL_ID = 1478992357327110220  # ID канала
+    CHANNEL_ID = 1566526277144547338  # ID канала
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -86,7 +86,7 @@ async def schedule_ping(channel, message, event):
 
         mentions = " ".join(f"<@{uid}>" for uid in event["participants"]) or "@everyone"
         await channel.send(
-            f"{mentions}\n**СТРЕЛА начинается через 5 минут! 🔥**\nФормат: {event['format']}",
+            f"{mentions}\n**Драка начинается через 5 минут! 🔥**\nФормат: {event['format']}",
             reference=message
         )
     except Exception as e:
@@ -101,7 +101,7 @@ class SlotButton(Button):
     async def callback(self, interaction: discord.Interaction):
         event = events.get(self.mid)
         if not event:
-            await interaction.response.send_message("Стрела удалена", ephemeral=True)
+            await interaction.response.send_message("Драка удалена", ephemeral=True)
             return
 
         uid = interaction.user.id
@@ -126,7 +126,7 @@ class CancelButton(Button):
     async def callback(self, interaction: discord.Interaction):
         event = events.get(self.mid)
         if not event:
-            await interaction.response.send_message("Стрела удалена", ephemeral=True)
+            await interaction.response.send_message("Драка удалена", ephemeral=True)
             return
 
         uid = interaction.user.id
@@ -152,7 +152,7 @@ async def update_event_message(message: discord.Message):
     list_text = "\n".join(parts) or "Пока пусто"
 
     content = (
-        f"**🔥 СТРЕЛА 🔥** @everyone\n"
+        f"**🔥 Драка 🔥** @everyone\n"
         f"**{event['date']} | {event['time']} | {event['server_number']} сервер**\n"
         f"**Формат: {event['format']}**   |   **Записались: {len(event['participants'])} чел.**\n"
         f"────────────────────────────\n"
@@ -178,7 +178,7 @@ class CreateArrowModal(Modal, title="Создать новую стрелу"):
         today = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y")
 
         content = (
-            f"**🔥 СТРЕЛА 🔥** @everyone\n"
+            f"**🔥 Драка 🔥** @everyone\n"
             f"**{today} | {t} | {sn} сервер**\n"
             f"**Формат: {f}**   |   **Записались: 0 чел.**\n"
             f"────────────────────────────\n"
@@ -203,7 +203,7 @@ class CreateArrowModal(Modal, title="Создать новую стрелу"):
 
         asyncio.create_task(schedule_ping(interaction.channel, msg, events[msg.id]))
 
-        await interaction.response.send_message("Стрела создана!", ephemeral=True)
+        await interaction.response.send_message("Драка создана!", ephemeral=True)
 
 
 # Панель создания
