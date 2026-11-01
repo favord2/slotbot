@@ -46,8 +46,6 @@ async def daily_cleanup():
 
     CHANNEL_ID = 1566526277144547338  # ID канала
     channel = bot.get_channel(CHANNEL_ID)
-    if not channel:
-        return
 
     setup_msg_id = None
     async for msg in channel.history(limit=100):
